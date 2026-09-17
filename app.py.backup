@@ -1,0 +1,1732 @@
+import io
+import re
+import json
+import os
+from pathlib import Path
+
+
+import pandas as pd
+import streamlit as st
+from pypdf import PdfReader
+from google import genai
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+)
+
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title="CSP Outcome Mapping Generator",
+    page_icon="📘",
+    layout="wide",
+)
+
+
+# ============================================================
+# FIXED COURSE OUTCOMES
+# ============================================================
+
+COS = [
+    (
+        "CO1",
+        "Describe/Explain the social, technical, and safety-related conditions, needs, and problems observed in the community.",
+        "Understand (L2)",
+    ),
+    (
+        "CO2",
+        "Apply fundamental concepts of electrical and electronics engineering to understand and address real-time problems identified in the community.",
+        "Apply (L3)",
+    ),
+    (
+        "CO3",
+        "Analyze the problems, needs, existing practices, and possible solutions identified during the community service activities.",
+        "Analyze (L4)",
+    ),
+    (
+        "CO4",
+        "Demonstrate professional ethics, social responsibility, teamwork, communication, and safety practices while interacting with the community and conducting service activities.",
+        "Apply/Evaluate (L3/L5)",
+    ),
+    (
+        "CO5",
+        "Prepare and present a technical Community Service Project report/seminar documenting the community observations, survey findings, activities carried out, outcomes, and learning experiences using appropriate technical vocabulary and presentation tools.",
+        "Create (L6)",
+    ),
+]
+
+
+# ============================================================
+# PROGRAM OUTCOMES
+# ============================================================
+
+POS = [
+    (
+        "PO1",
+        "Engineering Knowledge: Apply knowledge of mathematics, natural science, computing, engineering fundamentals and an engineering specialization to develop solutions to complex engineering problems.",
+    ),
+    (
+        "PO2",
+        "Problem Analysis: Identify, formulate, review research literature and analyze complex engineering problems, reaching substantiated conclusions with consideration for sustainable development.",
+    ),
+    (
+        "PO3",
+        "Design/Development of Solutions: Design creative solutions for complex engineering problems and design system components/processes to meet identified needs with consideration for public health and safety, whole-life cost, net zero carbon, culture, society and environment.",
+    ),
+    (
+        "PO4",
+        "Conduct Investigations of Complex Problems: Conduct investigations of complex engineering problems using research-based knowledge including design of experiments, modelling, analysis & interpretation of data to provide valid conclusions.",
+    ),
+    (
+        "PO5",
+        "Engineering Tool Usage: Create, select and apply appropriate techniques, resources and modern engineering & IT tools, including prediction and modelling recognizing their limitations to solve complex engineering problems.",
+    ),
+    (
+        "PO6",
+        "The Engineer and The World: Analyze and evaluate societal and environmental aspects while solving complex engineering problems for its impact on sustainability with reference to economy, health, safety, societal, legal framework, culture and environment.",
+    ),
+    (
+        "PO7",
+        "Ethics: Apply ethical principles and commit to professional ethics, human values, diversity and inclusion; adhere to national & international laws.",
+    ),
+    (
+        "PO8",
+        "Individual and Collaborative Team work: Function effectively as an individual, and as a member or leader in diverse/multi-disciplinary teams.",
+    ),
+    (
+        "PO9",
+        "Communication: Communicate effectively and inclusively within the engineering community and society at large, such as being able to comprehend and write effective reports and design documentation, make effective presentations considering cultural, language, and learning differences.",
+    ),
+    (
+        "PO10",
+        "Project Management and Finance: Apply knowledge and understanding of engineering management principles and economic decision-making and apply these to one's own work, as a member and leader in a team, and to manage projects and in multidisciplinary environments.",
+    ),
+    (
+        "PO11",
+        "Life-Long Learning: Recognize the need for, and have the preparation and ability for independent and life-long learning, adaptability to new and emerging technologies and critical thinking in the broader context of technological change.",
+    ),
+]
+
+
+# ============================================================
+# PROGRAM SPECIFIC OUTCOMES
+# ============================================================
+
+PSOS = [
+    (
+        "PSO1",
+        "Apply fundamental knowledge to analyze and solve complex problems of Electrical Machines, Control Systems, Instrumentation Systems, Power Systems and Power Electronic Systems.",
+    ),
+    (
+        "PSO2",
+        "Design electrical, electronics and interdisciplinary projects to meet industrial demands and solve real-time problems.",
+    ),
+    (
+        "PSO3",
+        "Utilize recent techniques and sustainable technologies in areas such as Control Engineering, Smart Grid, Power Quality and Advanced Power System Protection for lifelong learning.",
+    ),
+]
+
+
+# ============================================================
+# KNOWLEDGE PROFILE
+# ============================================================
+
+WKS = [
+    (
+        "WK1",
+        "A systematic, theory-based understanding of the natural sciences applicable to the discipline and awareness of relevant social sciences.",
+    ),
+    (
+        "WK2",
+        "Conceptually-based mathematics, numerical analysis, data analysis, statistics and formal aspects of computer and information science to support detailed analysis and modelling applicable to the discipline.",
+    ),
+    (
+        "WK3",
+        "A systematic, theory-based formulation of engineering fundamentals required in the engineering discipline.",
+    ),
+    (
+        "WK4",
+        "Engineering specialist knowledge that provides theoretical frameworks and bodies of knowledge for the accepted practice areas in the engineering discipline; much is at the forefront of the discipline.",
+    ),
+    (
+        "WK5",
+        "Knowledge, including efficient resource use, environmental impacts, whole-life cost, re-use of resources, net zero carbon, and similar concepts, that supports engineering design and operations in a practice area.",
+    ),
+    (
+        "WK6",
+        "Knowledge of engineering practice (technology) in the practice areas in the engineering discipline.",
+    ),
+    (
+        "WK7",
+        "Knowledge of the role of engineering in society and identified issues in engineering practice, such as the professional responsibility of an engineer to public safety and sustainable development.",
+    ),
+    (
+        "WK8",
+        "Engagement with selected knowledge in the current research literature of the discipline, awareness of the power of critical thinking and creative approaches to evaluate emerging issues.",
+    ),
+    (
+        "WK9",
+        "Ethics, inclusive behavior and conduct. Knowledge of professional ethics, responsibilities, and norms of engineering practice. Awareness of the need for diversity by reason of ethnicity, gender, age, physical ability etc. with mutual understanding and respect, and of inclusive attitudes.",
+    ),
+]
+
+
+# ============================================================
+# FIXED WK → PO/PSO MATRIX
+# ============================================================
+
+FIXED_WK_MATRIX = [
+    [2, 2, "-", "-", "-", 1, "-", "-", "-", "-", "-", "-", "-", "-"],
+    [2, 2, "-", "-", 2, "-", "-", "-", "-", "-", "-", 1, "-", "-"],
+    [3, 3, "-", "-", "-", "-", "-", "-", "-", "-", "-", 2, "-", "-"],
+    [3, 3, "-", "-", "-", "-", "-", "-", "-", "-", "-", 3, 1, "-"],
+    ["-", "-", 3, "-", "-", 3, "-", "-", "-", "-", "-", "-", 2, 2],
+    ["-", "-", "-", "-", 3, "-", "-", "-", "-", "-", "-", "-", 3, 3],
+    ["-", "-", "-", "-", "-", 3, "-", "-", "-", "-", "-", "-", "-", "-"],
+    ["-", "-", "-", 3, "-", "-", "-", "-", "-", "-", 3, "-", "-", 2],
+    ["-", "-", "-", "-", "-", "-", 3, "-", "-", "-", "-", "-", "-", "-"],
+]
+
+FIXED_WK_MATRIX = [
+    [
+        str(x).strip() if isinstance(x, str) else x
+        for x in row
+    ]
+    for row in FIXED_WK_MATRIX
+]
+
+
+# ============================================================
+# SDGs
+# ============================================================
+
+SDGS = {
+    1: "End poverty in all its forms everywhere",
+    2: "End hunger, achieve food security and improved nutrition and promote sustainable agriculture",
+    3: "Ensure healthy lives and promote well-being for all at all ages",
+    4: "Ensure inclusive and equitable quality education and promote lifelong learning opportunities for all",
+    5: "Achieve gender equality and empower all women and girls",
+    6: "Ensure availability and sustainable management of water and sanitation for all",
+    7: "Ensure access to affordable, reliable, sustainable and modern energy for all",
+    8: "Promote sustained, inclusive, and sustainable economic growth, full and productive employment and decent work for all",
+    9: "Build resilient infrastructure, promote inclusive and sustainable industrialization and foster innovation",
+    10: "Reduce inequality within and among countries",
+    11: "Make cities and human settlements inclusive, safe, resilient and sustainable",
+    12: "Ensure sustainable consumption and production patterns",
+    13: "Take urgent action to combat climate change and its impacts",
+    14: "Conserve and sustainably use the oceans, seas and marine resources for sustainable development",
+    15: "Protect, restore and promote sustainable use of terrestrial ecosystems, sustainably manage forests, combat desertification, and halt and reverse land degradation and halt biodiversity loss",
+    16: "Promote peaceful and inclusive societies for sustainable development, provide access to justice for all and build effective, accountable and inclusive institutions at all levels",
+    17: "Strengthen the means of implementation and revitalize the global partnership for sustainable development",
+}
+
+
+HEADERS = (
+    [f"PO{i}" for i in range(1, 12)]
+    + ["PSO1", "PSO2", "PSO3"]
+)
+
+
+
+# ============================================================
+# EXTRACT PDF TEXT WITH PAGE MARKERS
+# ============================================================
+
+def extract_text(uploaded):
+    """Extract the complete CSP book and preserve page numbers for AI evidence."""
+    reader = PdfReader(uploaded)
+    pages = []
+
+    for page_no, page in enumerate(reader.pages, start=1):
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+
+        pages.append(f"\n[PAGE {page_no}]\n{page_text}")
+
+    return "\n".join(pages)
+
+
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
+def clean_text(text):
+    text = text or ""
+    text = text.replace("\xa0", " ")
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&amp;", "&")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+# ============================================================
+# PROJECT TITLE
+# ============================================================
+
+def extract_title(text):
+    patterns = [
+        r"(?:project title|title of the project)\s*[:\-]\s*(.{5,180})",
+        r"(?:project)\s*[:\-]\s*(.{5,180})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            title = clean_text(match.group(1))
+            return title[:180]
+
+    return "Community Service Project"
+
+
+# ============================================================
+# GEMINI CONFIG
+# ============================================================
+
+def get_gemini_settings():
+    """Load Gemini settings for local use and Streamlit deployment.
+
+    Local priority: environment variable -> simple key file -> Streamlit secrets.
+    The simple key file avoids TOML formatting mistakes on Windows.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    model = os.getenv("GEMINI_MODEL", "").strip()
+
+    key_file = Path(".streamlit") / "gemini_api_key.txt"
+    if not api_key and key_file.exists():
+        api_key = key_file.read_text(encoding="utf-8").strip()
+
+    # Streamlit Community Cloud can supply secrets through st.secrets.
+    # Catch TOML errors so a bad local secrets.toml never crashes the app.
+    if not api_key:
+        try:
+            api_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+            if not model:
+                model = str(st.secrets.get("GEMINI_MODEL", "")).strip()
+        except Exception:
+            pass
+
+    if not model:
+        model = "gemini-3.6-flash"
+
+    if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
+        raise RuntimeError(
+            "Gemini API key not found. Paste your key into "
+            ".streamlit\\gemini_api_key.txt."
+        )
+
+    return api_key, model
+
+
+def call_ai_json(system_prompt, user_prompt):
+    api_key, model = get_gemini_settings()
+    client = genai.Client(api_key=api_key)
+
+    response = client.models.generate_content(
+        model=model,
+        contents=f"{system_prompt}\n\n{user_prompt}",
+        config={
+            "temperature": 0,
+            "response_mime_type": "application/json",
+        },
+    )
+
+    content = getattr(response, "text", None)
+    if not content:
+        raise RuntimeError("Gemini returned an empty response.")
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Gemini returned invalid JSON: {exc}") from exc
+
+
+# ============================================================
+# DYNAMIC PROJECT COMPONENT DETECTION
+#
+# IMPORTANT:
+# There is NO predefined project-component list here.
+# The component names are generated from the uploaded CSP book.
+# ============================================================
+
+def analyze_project_book(text):
+    """
+    Analyze the uploaded CSP book itself and extract substantive
+    project components. Nothing domain-specific is hard-coded.
+    """
+
+    system_prompt = """
+You are an evidence-grounded document analyst.
+
+Your task is to identify the actual project components of a
+Community Service Project from the supplied project-book text.
+
+STRICT RULES:
+1. Use ONLY information contained in the supplied document.
+2. Do NOT assume the project's domain before reading the document.
+3. Do NOT use a predefined component taxonomy or a list of
+   components from previous projects.
+4. Generate the component names yourself from the document.
+5. A component must represent a distinct substantive project
+   activity, intervention, technical task, community-facing
+   activity, implementation activity, training/awareness activity,
+   maintenance activity, or problem/solution area actually
+   addressed by the project.
+6. Ignore acknowledgements, certificates, generic formatting,
+   references, and generic statements about teamwork unless they
+   describe an actual project activity.
+7. Prefer concise, specific noun-phrase labels.
+8. Do not invent details merely to reach a target number.
+9. Aim for 3 to 5 components when the document genuinely supports
+   that many. If it supports fewer, return fewer.
+10. Every component MUST have evidence from the document.
+11. Page numbers must be taken from [PAGE N] markers in the supplied
+    text. Do not guess page numbers.
+
+Return JSON only in this structure:
+{
+  "project_title": "string",
+  "components": [
+    {
+      "name": "string",
+      "evidence": [
+        {"page": 1, "quote": "short supporting quote"}
+      ]
+    }
+  ]
+}
+"""
+
+    # Keep the entire document available to the model. For unusually
+    # large books, analyze chunks first so late pages are not silently lost.
+    max_chars = 60000
+
+    if len(text) <= max_chars:
+        result = call_ai_json(
+            system_prompt,
+            "Analyze this complete uploaded CSP project book:\n\n" + text
+        )
+    else:
+        chunk_size = 30000
+        chunks = [
+            text[i:i + chunk_size]
+            for i in range(0, len(text), chunk_size)
+        ]
+
+        chunk_results = []
+
+        for idx, chunk in enumerate(chunks, start=1):
+            chunk_prompt = f"""
+Analyze only this part of the uploaded CSP project book.
+Extract candidate project components supported by this part.
+Do not invent components. Include short evidence and page numbers.
+
+Return JSON:
+{{
+  "candidates": [
+    {{
+      "name": "string",
+      "evidence": [
+        {{"page": 1, "quote": "short supporting quote"}}
+      ]
+    }}
+  ]
+}}
+
+This is document chunk {idx} of {len(chunks)}.
+
+DOCUMENT:
+{chunk}
+"""
+            chunk_results.append(
+                call_ai_json(system_prompt, chunk_prompt)
+            )
+
+        synthesis_prompt = """
+Synthesize the actual project components of the uploaded CSP book
+from the candidate evidence below.
+
+Rules:
+- Use only the supplied candidate evidence.
+- Do not introduce a predefined component list.
+- Merge duplicate/overlapping candidates.
+- Generate concise project-specific component names.
+- Aim for 3 to 5 components only when the evidence supports them.
+- If fewer are genuinely supported, return fewer.
+- Preserve supporting page numbers and short evidence quotes.
+
+Return JSON:
+{
+  "project_title": "string",
+  "components": [
+    {
+      "name": "string",
+      "evidence": [
+        {"page": 1, "quote": "short supporting quote"}
+      ]
+    }
+  ]
+}
+
+CANDIDATE EVIDENCE:
+""" + json.dumps(chunk_results, ensure_ascii=False)
+
+        result = call_ai_json(system_prompt, synthesis_prompt)
+
+    # Defensive normalization: never create components here.
+    components = []
+
+    for item in result.get("components", []):
+        if not isinstance(item, dict):
+            continue
+
+        name = clean_text(str(item.get("name", "")))
+        if not name:
+            continue
+
+        evidence = []
+        for ev in item.get("evidence", []):
+            if not isinstance(ev, dict):
+                continue
+
+            quote = clean_text(str(ev.get("quote", "")))
+            page = ev.get("page")
+
+            try:
+                page = int(page)
+            except (TypeError, ValueError):
+                page = None
+
+            if quote:
+                evidence.append({
+                    "page": page,
+                    "quote": quote[:500],
+                })
+
+        if evidence:
+            components.append({
+                "name": name[:160],
+                "evidence": evidence[:5],
+            })
+
+    # De-duplicate generated names without replacing them with
+    # predefined labels.
+    unique = []
+    seen = set()
+
+    for component in components:
+        key = component["name"].casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(component)
+
+    return {
+        "project_title": clean_text(
+            str(result.get("project_title", ""))
+        )[:180] or "Community Service Project",
+        "components": unique[:5],
+    }
+
+
+# ============================================================
+# SECTION 2 — FIXED CO → PO/PSO MATRIX
+# ============================================================
+
+def map_co_matrix():
+    return [
+        ["1","3","-","1","1","3","2","2","2","-","1","1","-","1"],
+        ["3","2","2","1","3","2","1","1","1","-","1","3","2","2"],
+        ["2","3","2","3","2","2","-","1","1","1","2","2","2","1"],
+        ["-","1","1","-","1","3","3","3","3","1","2","1","1"],
+        ["1","2","1","1","2","1","1","2","3","2","3","1","1","1"],
+    ]
+
+
+# ============================================================
+# DYNAMIC COMPONENT → SDG MAPPING
+# ============================================================
+
+def map_sdg_components(components, text):
+    """
+    Map the AI-generated project components to the fixed SDG list,
+    using only evidence from the uploaded CSP book.
+    """
+
+    component_names = [
+        c["name"] if isinstance(c, dict) else str(c)
+        for c in components
+    ]
+
+    if not component_names:
+        return []
+
+    sdg_text = "\n".join(
+        f"SDG {number}: {description}"
+        for number, description in SDGS.items()
+    )
+
+    system_prompt = """
+You are an evidence-grounded SDG mapping analyst.
+
+Use ONLY the supplied CSP project-book text and the supplied
+project components.
+
+The SDG catalogue is fixed to SDGs 1 through 17 exactly as supplied.
+Do not create new SDGs.
+
+For each project component:
+- identify only SDGs that have a meaningful, direct connection
+  supported by the project book;
+- assign mapping strength 1, 2, or 3:
+  3 = high/direct contribution,
+  2 = moderate contribution,
+  1 = limited but defensible contribution;
+- do not assign an SDG just to fill columns;
+- do not infer a connection that the document does not support.
+
+Across the complete project, identify the relevant SDGs. Aim for
+at least 3 only when the document genuinely supports at least 3.
+If the project supports fewer, return fewer.
+
+Return JSON only:
+{
+  "mappings": [
+    {
+      "component": "exact component name from the supplied list",
+      "sdgs": [
+        {
+          "number": 1,
+          "strength": 1,
+          "reason": "brief evidence-based reason"
+        }
+      ]
+    }
+  ]
+}
+"""
+
+    user_prompt = f"""
+FIXED SDG CATALOGUE:
+{sdg_text}
+
+PROJECT COMPONENTS:
+{json.dumps(component_names, ensure_ascii=False, indent=2)}
+
+UPLOADED CSP PROJECT BOOK:
+{text}
+"""
+
+    result = call_ai_json(system_prompt, user_prompt)
+
+    rows = []
+    valid_components = set(component_names)
+
+    for item in result.get("mappings", []):
+        if not isinstance(item, dict):
+            continue
+
+        component = clean_text(str(item.get("component", "")))
+
+        if component not in valid_components:
+            continue
+
+        vals = {}
+
+        for mapping in item.get("sdgs", []):
+            if not isinstance(mapping, dict):
+                continue
+
+            try:
+                number = int(mapping.get("number"))
+                strength = int(mapping.get("strength"))
+            except (TypeError, ValueError):
+                continue
+
+            if number in SDGS and strength in {1, 2, 3}:
+                vals[number] = str(strength)
+
+        if vals:
+            rows.append((component, vals))
+
+    # Preserve the user's component order. Missing AI rows are not
+    # fabricated; they simply have no SDG mapping.
+    row_by_name = {name: vals for name, vals in rows}
+    ordered_rows = [
+        (name, row_by_name[name])
+        for name in component_names
+        if name in row_by_name
+    ]
+
+    return ordered_rows
+
+
+# ============================================================
+# SDG TABLE VALIDATION
+# ============================================================
+
+def get_valid_sdg_rows(sdg_rows):
+    """
+    Use the union of SDGs actually mapped by the AI.
+    Missing component/SDG relationships remain '-'.
+    No fallback SDGs are invented.
+    """
+
+    if not sdg_rows:
+        return [], []
+
+    matched_sdgs = sorted({
+        sdg
+        for _, vals in sdg_rows
+        for sdg in vals
+        if sdg in SDGS
+    })
+
+    valid_rows = []
+
+    for component, vals in sdg_rows:
+        valid_rows.append(
+            (
+                component,
+                {
+                    sdg: vals[sdg]
+                    for sdg in matched_sdgs
+                    if sdg in vals
+                },
+            )
+        )
+
+    return valid_rows, matched_sdgs
+
+
+# ============================================================
+# EVIDENCE HELPERS
+# ============================================================
+
+def component_evidence_text(analysis):
+    lines = []
+
+    for component in analysis.get("components", []):
+        name = component.get("name", "")
+        lines.append(f"**{name}**")
+
+        for ev in component.get("evidence", []):
+            page = ev.get("page")
+            quote = ev.get("quote", "")
+
+            if page:
+                lines.append(f"- Page {page}: \"{quote}\"")
+            else:
+                lines.append(f"- \"{quote}\"")
+
+    return "\n".join(lines)
+
+# ============================================================
+# REPORTLAB PARAGRAPH HELPER
+# ============================================================
+
+def P(
+    txt,
+    style,
+):
+
+    return Paragraph(
+        str(txt),
+        style
+    )
+
+
+# ============================================================
+# BUILD FINAL PDF
+#
+# NO BORDER
+# NO PAGE NUMBER
+# NO DEPARTMENT FOOTER
+# ============================================================
+
+def build_pdf(
+    project_title,
+    co_matrix,
+    components,
+    sdg_rows,
+):
+
+    buf = io.BytesIO()
+
+
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+
+
+    styles = getSampleStyleSheet()
+
+
+    title = ParagraphStyle(
+        "title",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=15,
+        leading=18,
+        spaceAfter=8,
+    )
+
+
+    h = ParagraphStyle(
+        "h",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        spaceBefore=6,
+        spaceAfter=6,
+    )
+
+
+    body = ParagraphStyle(
+        "body",
+        parent=styles["BodyText"],
+        fontSize=8.5,
+        leading=11,
+    )
+
+
+    small = ParagraphStyle(
+        "small",
+        parent=body,
+        fontSize=7,
+        leading=9,
+    )
+
+
+    story = []
+
+
+    # ========================================================
+    # TITLE
+    # ========================================================
+
+    story.append(
+        P(
+            "CO-PO-PSO & WK-PO-PSO Mapping",
+            title
+        )
+    )
+
+
+    story.append(
+        Spacer(
+            1,
+            4
+        )
+    )
+
+
+    # ========================================================
+    # SECTION 1
+    # ========================================================
+
+    story.append(
+        P(
+            "1) Course Outcomes:",
+            h
+        )
+    )
+
+
+    story.append(
+        P(
+            "On successful completion of the Community Service Project, the student will be able to:",
+            body
+        )
+    )
+
+
+    data = [
+        [
+            P("CO No.", small),
+            P("Course Outcome", small),
+            P("Bloom's Level", small),
+        ]
+    ]
+
+
+    for co, desc, bloom in COS:
+
+        data.append(
+            [
+                P(co, small),
+                P(desc, small),
+                P(bloom, small),
+            ]
+        )
+
+
+    tbl = Table(
+        data,
+        colWidths=[
+            18 * mm,
+            126 * mm,
+            35 * mm,
+        ],
+        repeatRows=1,
+    )
+
+
+    tbl.setStyle(
+        TableStyle(
+            [
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.6,
+                    colors.black,
+                ),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.whitesmoke,
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, 0),
+                    "CENTER",
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4,
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4,
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4,
+                ),
+            ]
+        )
+    )
+
+
+    story.append(tbl)
+
+
+    story.append(
+        Spacer(
+            1,
+            8
+        )
+    )
+
+
+    # ========================================================
+    # SECTION 2
+    # ========================================================
+
+    story.append(
+        P(
+            "2) COs Vs POs and PSOs:",
+            h
+        )
+    )
+
+
+    data = [
+        [P("CO", small)]
+        + [
+            P(x, small)
+            for x in HEADERS
+        ]
+    ]
+
+
+    for (co, _, _), row in zip(
+        COS,
+        co_matrix,
+    ):
+
+        data.append(
+            [P(co, small)]
+            + [
+                P(x, small)
+                for x in row
+            ]
+        )
+
+
+    tbl = Table(
+        data,
+        colWidths=[
+            14 * mm
+        ]
+        + [
+            12.2 * mm
+        ] * 14,
+        repeatRows=1,
+    )
+
+
+    tbl.setStyle(
+        TableStyle(
+            [
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.black,
+                ),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.whitesmoke,
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "CENTER",
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, -1),
+                    6,
+                ),
+            ]
+        )
+    )
+
+
+    story.append(tbl)
+
+
+    story.append(
+        Spacer(
+            1,
+            5
+        )
+    )
+
+
+    story.append(
+        P(
+            "Scale: 3 = High    2 = Medium    1 = Low    - = No mapping",
+            small
+        )
+    )
+
+
+    story.append(
+        PageBreak()
+    )
+
+
+    # ========================================================
+    # SECTION 3
+    # ========================================================
+
+    story.append(
+        P(
+            "3) Knowledge and Attitude Profile Vs Program Outcomes and Program Specific Outcomes",
+            h
+        )
+    )
+
+
+    data = [
+        [P("", small)]
+        + [
+            P(x, small)
+            for x in HEADERS
+        ]
+    ]
+
+
+    for (wk, _), row in zip(
+        WKS,
+        FIXED_WK_MATRIX,
+    ):
+
+        data.append(
+            [P(wk, small)]
+            + [
+                P(x, small)
+                for x in row
+            ]
+        )
+
+
+    tbl = Table(
+        data,
+        colWidths=[
+            15 * mm
+        ]
+        + [
+            12.1 * mm
+        ] * 14,
+        repeatRows=1,
+    )
+
+
+    tbl.setStyle(
+        TableStyle(
+            [
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.black,
+                ),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.whitesmoke,
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "CENTER",
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, -1),
+                    6,
+                ),
+            ]
+        )
+    )
+
+
+    story.append(tbl)
+
+
+    story.append(
+        Spacer(
+            1,
+            5
+        )
+    )
+
+
+    story.append(
+        P(
+            "Scale: 3 = High    2 = Medium    1 = Low",
+            small
+        )
+    )
+
+
+    story.append(
+        PageBreak()
+    )
+
+
+    # ========================================================
+    # SECTION 4
+    # ========================================================
+
+    story.append(
+        P(
+            "4) SDGs Vs Community Service Project Components:",
+            h
+        )
+    )
+
+
+    story.append(
+        Spacer(
+            1,
+            5
+        )
+    )
+
+
+    valid_sdg_rows, matched_sdgs = get_valid_sdg_rows(
+        sdg_rows
+    )
+
+
+    if valid_sdg_rows and matched_sdgs:
+
+        data = [
+            [
+                P(
+                    "Project Component",
+                    small
+                )
+            ]
+            + [
+                P(
+                    f"SDG {n}",
+                    small
+                )
+                for n in matched_sdgs
+            ]
+        ]
+
+
+        for component, vals in valid_sdg_rows:
+
+            row = [
+                P(
+                    component,
+                    small
+                )
+            ]
+
+
+            for n in matched_sdgs:
+
+                row.append(
+                    P(
+                        vals.get(
+                            n,
+                            "1"
+                        ),
+                        small
+                    )
+                )
+
+
+            data.append(
+                row
+            )
+
+
+        component_width = 68 * mm
+
+
+        available_width = (
+            A4[0] - 24 * mm
+        )
+
+
+        remaining_width = (
+            available_width
+            - component_width
+        )
+
+
+        sdg_width = (
+            remaining_width
+            / len(matched_sdgs)
+        )
+
+
+        tbl = Table(
+            data,
+            colWidths=[
+                component_width
+            ]
+            + [
+                sdg_width
+            ] * len(matched_sdgs),
+            repeatRows=1,
+        )
+
+
+        tbl.setStyle(
+            TableStyle(
+                [
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.black,
+                    ),
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.whitesmoke,
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "ALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "CENTER",
+                    ),
+                    (
+                        "ALIGN",
+                        (0, 1),
+                        (0, -1),
+                        "LEFT",
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "FONTSIZE",
+                        (0, 0),
+                        (-1, -1),
+                        7,
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4,
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4,
+                    ),
+                ]
+            )
+        )
+
+
+        story.append(tbl)
+
+
+        story.append(
+            Spacer(
+                1,
+                6
+            )
+        )
+
+
+        story.append(
+            P(
+                "Mapping scale: 3 = High    2 = Medium    1 = Low",
+                small
+            )
+        )
+
+
+    else:
+
+        story.append(
+            P(
+                "No relevant project components were detected for SDG mapping.",
+                body
+            )
+        )
+
+
+    # ========================================================
+    # BUILD PDF
+    # ========================================================
+
+    doc.build(
+        story
+    )
+
+
+    buf.seek(0)
+
+    return buf.getvalue()
+
+
+
+
+# ============================================================
+# STREAMLIT UI
+# ============================================================
+
+st.title("📘 CSP Outcome Mapping Generator")
+
+st.caption(
+    "Upload one Community Service Project book → "
+    "AI extracts project components from the book itself → "
+    "generate Sections 1–4 as a PDF."
+)
+
+
+uploaded = st.file_uploader(
+    "Upload your CSP Project Book (PDF)",
+    type=["pdf"],
+)
+
+
+if uploaded:
+
+    text = extract_text(uploaded)
+
+    if not text.strip():
+        st.error(
+            "No selectable text was found. "
+            "This version needs a text-readable PDF."
+        )
+        st.stop()
+
+    cleaned = clean_text(text)
+
+    # --------------------------------------------------------
+    # AI analysis of the uploaded book.
+    # --------------------------------------------------------
+
+    try:
+        with st.spinner(
+            "Reading the CSP project book and identifying its actual project components..."
+        ):
+            analysis = analyze_project_book(text)
+
+    except Exception as e:
+        st.error(f"Project-book AI analysis failed: {e}")
+        st.info(
+            "Paste your Gemini API key into .streamlit\\gemini_api_key.txt "
+            "or configure GEMINI_API_KEY in Streamlit secrets."
+        )
+        st.stop()
+
+    project_title = (
+        analysis.get("project_title")
+        or extract_title(text)
+    )
+
+    component_objects = analysis.get("components", [])
+    components = [
+        item["name"]
+        for item in component_objects
+        if item.get("name")
+    ]
+
+    if not components:
+        st.error(
+            "The uploaded project book did not contain enough "
+            "evidence to identify a substantive project component."
+        )
+        st.stop()
+
+    # --------------------------------------------------------
+    # Fixed Section 2.
+    # --------------------------------------------------------
+
+    co_matrix = map_co_matrix()
+
+    # --------------------------------------------------------
+    # Initial dynamic Section 4 mapping.
+    # --------------------------------------------------------
+
+    try:
+        with st.spinner("Mapping the detected components to relevant SDGs..."):
+            sdg_rows = map_sdg_components(
+                component_objects,
+                cleaned,
+            )
+    except Exception as e:
+        st.error(f"SDG mapping failed: {e}")
+        st.stop()
+
+    st.success(
+        f"Project book extracted successfully. "
+        f"Detected {len(text):,} characters and "
+        f"{len(components)} project components from the book."
+    )
+
+    # --------------------------------------------------------
+    # Extracted information + evidence.
+    # --------------------------------------------------------
+
+    with st.expander(
+        "🔎 AI-extracted project information and evidence",
+        expanded=True,
+    ):
+        st.write(f"**Project title:** {project_title}")
+
+        st.write(
+            f"**Components found from the uploaded CSP book ({len(components)}):**"
+        )
+
+        for component in components:
+            st.write(f"- {component}")
+
+        st.markdown("**Evidence used for component detection:**")
+
+        for component in component_objects:
+            st.markdown(f"**{component['name']}**")
+
+            for ev in component.get("evidence", []):
+                page = ev.get("page")
+                quote = ev.get("quote", "")
+
+                if page:
+                    st.write(f'Page {page}: "{quote}"')
+                else:
+                    st.write(f'"{quote}"')
+
+        st.text_area(
+            "Extracted text preview",
+            text[:8000],
+            height=250,
+        )
+
+    # --------------------------------------------------------
+    # Optional manual component editing.
+    #
+    # Editing does NOT use a predefined component list.
+    # User can change names, then explicitly re-map SDGs.
+    # --------------------------------------------------------
+
+    st.subheader("Project components used for Section 4")
+
+    edited = st.text_area(
+        "Edit only if needed. One component per line.",
+        "\n".join(components),
+        height=180,
+    )
+
+    edited_components = [
+        x.strip()
+        for x in edited.splitlines()
+        if x.strip()
+    ]
+
+    if st.button(
+        "🔄 Re-map SDGs for edited components",
+        type="secondary",
+    ):
+        if not edited_components:
+            st.warning("Enter at least one project component.")
+        else:
+            try:
+                edited_objects = [
+                    {"name": name, "evidence": []}
+                    for name in edited_components
+                ]
+
+                with st.spinner(
+                    "Checking the edited components against the uploaded CSP book..."
+                ):
+                    sdg_rows = map_sdg_components(
+                        edited_objects,
+                        cleaned,
+                    )
+
+                st.session_state["sdg_rows"] = sdg_rows
+                st.session_state["active_components"] = edited_components
+                st.success("SDG mapping updated from the uploaded book.")
+
+            except Exception as e:
+                st.error(f"SDG remapping failed: {e}")
+
+    # Use the edited list for the current report after the user
+    # explicitly remaps it. Otherwise keep the AI-detected list.
+    if "active_components" in st.session_state:
+        active_components = st.session_state["active_components"]
+        sdg_rows = st.session_state.get("sdg_rows", sdg_rows)
+    else:
+        active_components = components
+
+    # --------------------------------------------------------
+    # Section 2 preview.
+    # --------------------------------------------------------
+
+    st.subheader("Section 2 — CO → PO/PSO mapping")
+
+    section2_data = {"CO": [co[0] for co in COS]}
+
+    for i, header in enumerate(HEADERS):
+        section2_data[header] = [
+            co_matrix[row][i]
+            for row in range(5)
+        ]
+
+    st.dataframe(
+        pd.DataFrame(section2_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Section 3 preview.
+    # --------------------------------------------------------
+
+    st.subheader(
+        "Section 3 — WK → PO/PSO mapping (fixed)"
+    )
+
+    section3_data = {"WK": [wk[0] for wk in WKS]}
+
+    for i, header in enumerate(HEADERS):
+        section3_data[header] = [
+            FIXED_WK_MATRIX[row][i]
+            for row in range(len(WKS))
+        ]
+
+    st.dataframe(
+        pd.DataFrame(section3_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Section 4 preview.
+    # --------------------------------------------------------
+
+    st.subheader("Section 4 — Project Components → SDGs")
+
+    valid_sdg_rows, preview_sdgs = get_valid_sdg_rows(sdg_rows)
+
+    if valid_sdg_rows and preview_sdgs:
+
+        preview_rows = []
+
+        for component, vals in valid_sdg_rows:
+            row = {"Project Component": component}
+
+            for n in preview_sdgs:
+                row[f"SDG {n}"] = vals.get(n, "-")
+
+            preview_rows.append(row)
+
+        df_preview = pd.DataFrame(
+            preview_rows,
+            columns=["Project Component"]
+            + [f"SDG {n}" for n in preview_sdgs],
+        )
+
+        st.dataframe(
+            df_preview,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            "SDGs shown here are selected from the fixed SDG 1–17 list "
+            "only when the uploaded CSP book supports the relationship. "
+            "No fallback SDGs or predefined project components are used."
+        )
+
+    else:
+        st.warning(
+            "No defensible SDG relationship was found from the uploaded book."
+        )
+
+    # --------------------------------------------------------
+    # Generate PDF.
+    # --------------------------------------------------------
+
+    if st.button(
+        "📄 Generate Final CSP PDF",
+        type="primary",
+    ):
+        try:
+            pdf = build_pdf(
+                project_title,
+                co_matrix,
+                active_components,
+                sdg_rows,
+            )
+
+            st.success(
+                "Final CSP PDF generated successfully."
+            )
+
+            st.download_button(
+                label="⬇️ Download Final PDF",
+                data=pdf,
+                file_name="CSP_CO_PO_PSO_WK_SDG_Mapping.pdf",
+                mime="application/pdf",
+                key="download_final_csp_pdf",
+            )
+
+        except Exception as e:
+            st.error(f"PDF generation failed: {e}")
+
+else:
+    st.info(
+        "Start by uploading your CSP project book PDF."
+    )
